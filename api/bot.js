@@ -28,8 +28,7 @@ const getUserKeyboard = () => {
 const getAdminKeyboard = () => {
     return Markup.keyboard([
         ['🎱 Записатися на турнір', '📞 Зв\'язок'],
-        ['➕ Додати турнір', '❌ Видалити турнір'],
-        ['💬 Чат з користувачами']
+        ['➕ Додати турнір', '❌ Видалити турнір']
     ]).resize();
 };
 
@@ -38,9 +37,10 @@ bot.start(async (ctx) => {
     
     try {
         const db = await getDatabase();
+        // Сбрасываем статусы чата при старте на всякий случай
         await db.collection('users').updateOne(
             { telegramId: ctx.from.id },
-            { $set: { username: ctx.from.username, firstName: ctx.from.first_name, lastSeen: new Date() } },
+            { $set: { username: ctx.from.username, firstName: ctx.from.first_name, lastSeen: new Date() }, $unset: { isChatting: "", replyingTo: "" } },
             { upsert: true }
         );
     } catch (err) {
@@ -99,7 +99,6 @@ bot.action(/reg_(.+)/, async (ctx) => {
         });
 
         await ctx.answerCbQuery();
-
         const text = `📝 Щоб завершити реєстрацію на <b>${tournament.title}</b>, будь ласка, заповніть цю форму:\n\n👉 ${tournament.formLink}\n\nПісля заповнення ми зв'яжемося з вами для підтвердження.`;
         await ctx.replyWithHTML(text);
     } catch (err) {
@@ -113,15 +112,43 @@ bot.hears('📞 Зв\'язок', (ctx) => {
     ctx.replyWithHTML(text, Markup.inlineKeyboard([[Markup.button.callback('✉️ Написати адміністратору', 'start_chat')]]));
 });
 
+// --- ЛОГІКА ЧАТУ (ПОЧАТОК) ---
+
+// 1. Користувач натискає кнопку
 bot.action('start_chat', async (ctx) => {
     await ctx.answerCbQuery();
-    await ctx.reply("✍️ Напишіть ваше повідомлення сюди, і ми передамо його адміністратору.\n\n(Для скасування операції натисніть /cancel)");
+    try {
+        const db = await getDatabase();
+        await db.collection('users').updateOne(
+            { telegramId: ctx.from.id },
+            { $set: { isChatting: true } }
+        );
+        await ctx.reply("✍️ Напишіть ваше повідомлення. Воно буде надіслано адміністратору.");
+    } catch (err) {
+        console.error(err);
+    }
 });
 
-bot.hears('💬 Чат з користувачами', (ctx) => {
-    if (!isAdmin(ctx)) return;
-    ctx.reply("Система чатів у процесі розробки.");
+// 2. Адмін натискає кнопку під повідомленням юзера
+bot.action(/reply_(.+)/, async (ctx) => {
+    if (!isAdmin(ctx)) return ctx.answerCbQuery('Тільки для адміністраторів', { show_alert: true });
+    
+    const targetUserId = parseInt(ctx.match[1]);
+    await ctx.answerCbQuery();
+    
+    try {
+        const db = await getDatabase();
+        await db.collection('users').updateOne(
+            { telegramId: ctx.from.id },
+            { $set: { replyingTo: targetUserId } }
+        );
+        await ctx.reply("✍️ Напишіть вашу відповідь. Наступне повідомлення буде надіслано цьому користувачу.");
+    } catch (err) {
+        console.error(err);
+    }
 });
+// --- ЛОГІКА ЧАТУ (КІНЕЦЬ) ---
+
 
 bot.hears('➕ Додати турнір', (ctx) => {
     if (!isAdmin(ctx)) return;
@@ -139,69 +166,18 @@ bot.hears(/^\+Турнір\s*\|\s*(.+?)\s*\|\s*(.+?)\s*\|\s*(.+?)\s*\|\s*(.+)$/i
     try {
         const db = await getDatabase();
         await db.collection('tournaments').insertOne({
-            title,
-            date,
-            format,
-            formLink,
-            active: true
+            title, date, format, formLink, active: true
         });
         ctx.reply(`✅ Турнір "${title}" успішно додано!\n🔗 Прив'язана форма: ${formLink}`);
     } catch (err) {
-        console.error(err);
-        ctx.reply("Помилка при додаванні турніру до бази даних.");
+        ctx.reply("Помилка при додаванні турніру.");
     }
 });
 
-// --- НОВЕ: Вивід списку для видалення ---
 bot.hears('❌ Видалити турнір', async (ctx) => {
     if (!isAdmin(ctx)) return;
     try {
         const db = await getDatabase();
         const tournaments = await db.collection('tournaments').find({ active: true }).toArray();
 
-        if (tournaments.length === 0) {
-            return ctx.reply('Наразі немає активних турнірів для видалення.');
-        }
-
-        // Створюємо масив кнопок для кожного турніру
-        const buttons = tournaments.map(t => [Markup.button.callback(`❌ ${t.title}`, `del_${t._id}`)]);
-        
-        return ctx.reply('Оберіть турнір, який хочете видалити:', Markup.inlineKeyboard(buttons));
-    } catch (err) {
-        console.error(err);
-        return ctx.reply('Помилка завантаження турнірів.');
-    }
-});
-
-// --- НОВЕ: Логіка самого видалення з БД ---
-bot.action(/del_(.+)/, async (ctx) => {
-    if (!isAdmin(ctx)) {
-        return ctx.answerCbQuery('У вас немає прав для цієї дії.', { show_alert: true });
-    }
-    
-    const tournamentId = ctx.match[1];
-    
-    try {
-        const db = await getDatabase();
-        // Видаляємо документ з колекції по ID
-        await db.collection('tournaments').deleteOne({ _id: new ObjectId(tournamentId) });
-        
-        await ctx.answerCbQuery('Турнір успішно видалено!');
-        
-        // Змінюємо повідомлення, щоб кнопки зникли
-        await ctx.editMessageText('✅ Турнір успішно видалено з бази.');
-    } catch (err) {
-        console.error(err);
-        await ctx.answerCbQuery('Помилка видалення.');
-    }
-});
-
-module.exports = async (req, res) => {
-    try {
-        await bot.handleUpdate(req.body);
-        res.status(200).send('OK');
-    } catch (error) {
-        console.error(error);
-        res.status(500).send('Internal Server Error');
-    }
-};
+        if (tournaments.length ===
