@@ -98,6 +98,34 @@ bot.hears('💬 Чат з користувачами', (ctx) => {
     ctx.reply("Тут ви зможете бачити вхідні повідомлення від користувачів, відповідати їм, завершувати діалог або блокувати спамерів.\n\n(Очікує підключення системи чатів)");
 });
 
+const addTournamentWizard = new Scenes.WizardScene(
+    'add-tournament',
+    (ctx) => {
+        ctx.reply('Введіть назву турніру:');
+        ctx.wizard.state.tournamentData = {};
+        return ctx.wizard.next();
+    },
+    (ctx) => {
+        ctx.wizard.state.tournamentData.title = ctx.message.text;
+        ctx.reply('Введіть дату та час (наприклад, 20 червня, 18:00):');
+        return ctx.wizard.next();
+    },
+    (ctx) => {
+        ctx.wizard.state.tournamentData.date = ctx.message.text;
+        ctx.reply('Введіть формат (наприклад, Вільна піраміда):');
+        return ctx.wizard.next();
+    },
+    async (ctx) => {
+        ctx.wizard.state.tournamentData.format = ctx.message.text;
+        ctx.wizard.state.tournamentData.active = true;
+        
+        const db = await getDatabase();
+        await db.collection('tournaments').insertOne(ctx.wizard.state.tournamentData);
+        
+        ctx.reply('✅ Турнір успішно додано!');
+        return ctx.scene.leave();
+    }
+);
 
 // --- ЕКСПОРТ ДЛЯ VERCEL ---
 module.exports = async (req, res) => {
