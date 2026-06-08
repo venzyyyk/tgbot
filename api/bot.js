@@ -1,4 +1,4 @@
-const { MongoClient } = require('mongodb');
+const { MongoClient, ObjectId } = require('mongodb'); // Добавили ObjectId
 const { Telegraf, Markup } = require('telegraf');
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
@@ -78,10 +78,21 @@ bot.hears('🎱 Записатися на турнір', async (ctx) => {
     }
 });
 
+// --- ЗМІНЕНО: Видача форми ---
 bot.action(/reg_(.+)/, async (ctx) => {
     const tournamentId = ctx.match[1];
     try {
         const db = await getDatabase();
+        
+        // Знаходимо конкретний турнір в базі за його ID
+        const tournament = await db.collection('tournaments').findOne({ _id: new ObjectId(tournamentId) });
+
+        if (!tournament || !tournament.formLink) {
+            await ctx.answerCbQuery('Помилка: форму для цього турніру не знайдено.');
+            return;
+        }
+
+        // Записуємо статистику в БД (за бажанням)
         await db.collection('registrations').insertOne({
             tournamentId,
             userId: ctx.from.id,
@@ -90,19 +101,18 @@ bot.action(/reg_(.+)/, async (ctx) => {
             date: new Date()
         });
 
-
         await ctx.answerCbQuery();
 
-        const formLink = "https://forms.gle/ТВОЯ_ССЫЛКА_НА_ФОРМУ"; 
-        const text = `📝 Щоб завершити реєстрацію, будь ласка, заповніть цю форму:\n\n👉 ${formLink}\n\nПісля заповнення ми зв'яжемося з вами для підтвердження.`;
+        // Віддаємо лінк саме для цього турніру
+        const text = `📝 Щоб завершити реєстрацію на <b>${tournament.title}</b>, будь ласка, заповніть цю форму:\n\n👉 ${tournament.formLink}\n\nПісля заповнення ми зв'яжемося з вами для підтвердження.`;
         
-        await ctx.reply(text);
-        
+        await ctx.replyWithHTML(text);
     } catch (err) {
         console.error(err);
-        await ctx.answerCbQuery('Помилка.');
+        await ctx.answerCbQuery('Сталася помилка.');
     }
 });
+
 bot.hears('📞 Зв\'язок', (ctx) => {
     const text = "📞 <b>Наші контакти:</b>\n\nТелефон: +38 (099) XXX-XX-XX\nАдреса: м. Харків\n\nВи також можете написати адміністратору безпосередньо через цього бота. Натисніть кнопку нижче:";
     ctx.replyWithHTML(text, Markup.inlineKeyboard([[Markup.button.callback('✉️ Написати адміністратору', 'start_chat')]]));
@@ -118,17 +128,20 @@ bot.hears('💬 Чат з користувачами', (ctx) => {
     ctx.reply("Система чатів у процесі розробки.");
 });
 
+// --- ЗМІНЕНО: Інструкція для адміна ---
 bot.hears('➕ Додати турнір', (ctx) => {
     if (!isAdmin(ctx)) return;
-    ctx.reply("Щоб додати новий турнір, просто надішліть повідомлення у такому форматі:\n\n+Турнір | Назва | Дата | Формат\n\nНаприклад:\n+Турнір | Кубок Харкова | 15 червня, 18:00 | Вільна піраміда");
+    ctx.reply("Щоб додати новий турнір, надішліть повідомлення у такому форматі:\n\n+Турнір | Назва | Дата | Формат | Посилання на форму\n\nНаприклад:\n+Турнір | Кубок Харкова | 15 червня, 18:00 | Вільна піраміда | https://forms.gle/твоя_силка");
 });
 
-bot.hears(/^\+Турнір\s*\|\s*(.+?)\s*\|\s*(.+?)\s*\|\s*(.+)$/i, async (ctx) => {
+// --- ЗМІНЕНО: Регулярка тепер ловить 4 параметра ---
+bot.hears(/^\+Турнір\s*\|\s*(.+?)\s*\|\s*(.+?)\s*\|\s*(.+?)\s*\|\s*(.+)$/i, async (ctx) => {
     if (!isAdmin(ctx)) return;
     
     const title = ctx.match[1].trim();
     const date = ctx.match[2].trim();
     const format = ctx.match[3].trim();
+    const formLink = ctx.match[4].trim(); // Зберігаємо посилання
 
     try {
         const db = await getDatabase();
@@ -136,9 +149,10 @@ bot.hears(/^\+Турнір\s*\|\s*(.+?)\s*\|\s*(.+?)\s*\|\s*(.+)$/i, async (ctx)
             title,
             date,
             format,
+            formLink, // Відправляємо лінк в БД
             active: true
         });
-        ctx.reply(`✅ Турнір "${title}" успішно додано! Можете перевірити його в меню.`);
+        ctx.reply(`✅ Турнір "${title}" успішно додано!\n🔗 Прив'язана форма: ${formLink}`);
     } catch (err) {
         console.error(err);
         ctx.reply("Помилка при додаванні турніру до бази даних.");
