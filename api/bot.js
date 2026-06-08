@@ -1,25 +1,30 @@
+const { MongoClient } = require('mongodb');
 const { Telegraf, Markup } = require('telegraf');
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
+const MONGODB_URI = process.env.MONGODB_URI;
+
 const bot = new Telegraf(BOT_TOKEN);
+const ADMIN_IDS = [731859824, 6070383336];
 
-// ID адміністраторів (встав сюди потрібні)
-const ADMIN_IDS = [731859824, 6070383336]; 
+let cachedDb = null;
 
-// Проста функція для перевірки, чи є користувач адміном
+async function getDatabase() {
+    if (cachedDb) return cachedDb;
+    const client = await MongoClient.connect(MONGODB_URI);
+    cachedDb = client.db('billiards_school');
+    return cachedDb;
+}
+
 const isAdmin = (ctx) => ADMIN_IDS.includes(ctx.from.id);
 
-// --- КЛАВІАТУРИ ГОЛОВНОГО МЕНЮ ---
-
-// Клавіатура звичайного користувача
 const getUserKeyboard = () => {
     return Markup.keyboard([
         ['🎱 Записатися на турнір'],
         ['📞 Зв\'язок']
-    ]).resize(); // resize() робить кнопки компактними
+    ]).resize();
 };
 
-// Клавіатура адміністратора
 const getAdminKeyboard = () => {
     return Markup.keyboard([
         ['🎱 Записатися на турнір', '📞 Зв\'язок'],
@@ -27,113 +32,119 @@ const getAdminKeyboard = () => {
     ]).resize();
 };
 
-// --- ОБРОБКА КОМАНДИ /start ---
-bot.start((ctx) => {
+bot.start(async (ctx) => {
     const userName = ctx.from.first_name || 'Користувачу';
     
+    try {
+        const db = await getDatabase();
+        await db.collection('users').updateOne(
+            { telegramId: ctx.from.id },
+            { $set: { username: ctx.from.username, firstName: ctx.from.first_name, lastSeen: new Date() } },
+            { upsert: true }
+        );
+    } catch (err) {
+        console.error(err);
+    }
+
     if (isAdmin(ctx)) {
-        const adminText = `Вітаю, Адміністраторе!\nПанель керування школою більярду активована.\n\nОберіть необхідну дію в меню нижче:`;
-        return ctx.reply(adminText, getAdminKeyboard());
+        return ctx.reply(`Вітаю, Адміністраторе!\nПанель керування школою більярду активована.`, getAdminKeyboard());
     }
     
-    const userText = `Вітаємо, ${userName}!\nОфіційний бот школи більярду до ваших послуг.\n\nБудь ласка, оберіть потрібний розділ меню:`;
-    return ctx.reply(userText, getUserKeyboard());
+    return ctx.reply(`Вітаємо, ${userName}!\nОфіційний бот школи більярду до ваших послуг.`, getUserKeyboard());
 });
 
+bot.hears('🎱 Записатися на турнір', async (ctx) => {
+    try {
+        const db = await getDatabase();
+        const tournaments = await db.collection('tournaments').find({ active: true }).toArray();
 
-// ==========================================
-//          РОЗДІЛИ КОРИСТУВАЧА
-// ==========================================
+        if (tournaments.length === 0) {
+            return ctx.reply('Наразі немає активних турнірів для запису.');
+        }
 
-// 1. Записатися на турнір
-bot.hears('🎱 Записатися на турнір', (ctx) => {
-    // Поки що це заглушка. Згодом ми будемо брати ці дані з бази
-    const text = "🏆 <b>Найближчі турніри:</b>\n\n" +
-                 "1. <i>Кубок Харкова (Вільна піраміда)</i>\n📅 15 червня, 18:00\n\n" +
-                 "2. <i>Турнір для новачків (Пул 8)</i>\n📅 20 червня, 12:00\n\n" +
-                 "Оберіть турнір, на який бажаєте зареєструватися:";
-                 
-    ctx.replyWithHTML(text, Markup.inlineKeyboard([
-        [Markup.button.callback('Записатися на Кубок Харкова', 'reg_tour_1')],
-        [Markup.button.callback('Записатися на Пул 8', 'reg_tour_2')]
-    ]));
+        let text = "🏆 <b>Найближчі турніри:</b>\n\n";
+        const buttons = [];
+
+        tournaments.forEach((t) => {
+            text += `🔹 <b>${t.title}</b>\n📅 Дата: ${t.date}\n📝 Формат: ${t.format}\n\n`;
+            buttons.push([Markup.button.callback(`Записатися на ${t.title}`, `reg_${t._id}`)]);
+        });
+
+        text += "Оберіть турнір, на який бажаєте зареєструватися:";
+        return ctx.replyWithHTML(text, Markup.inlineKeyboard(buttons));
+    } catch (err) {
+        console.error(err);
+        return ctx.reply('Помилка завантаження турнірів.');
+    }
 });
 
-// Обробка натискання кнопок запису
-bot.action(/reg_tour_(.+)/, async (ctx) => {
-    await ctx.answerCbQuery('Ваша заявка обробляється...');
-    await ctx.reply('Дякуємо! Ваша заявка на турнір прийнята. Адміністратор зв\'яжеться з вами для підтвердження.');
+bot.action(/reg_(.+)/, async (ctx) => {
+    const tournamentId = ctx.match[1];
+    try {
+        const db = await getDatabase();
+        await db.collection('registrations').insertOne({
+            tournamentId,
+            userId: ctx.from.id,
+            username: ctx.from.username,
+            firstName: ctx.from.first_name,
+            date: new Date()
+        });
+        await ctx.answerCbQuery('Заявку прийнято!');
+        await ctx.reply('Дякуємо! Ваша заявка на турнір прийнята. Адміністратор зв\'яжеться з вами для підтвердження.');
+    } catch (err) {
+        console.error(err);
+        await ctx.answerCbQuery('Помилка реєстрації.');
+    }
 });
 
-// 2. Зв'язок
 bot.hears('📞 Зв\'язок', (ctx) => {
-    const text = "📞 <b>Наші контакти:</b>\n\n" +
-                 "Телефон: +38 (099) XXX-XX-XX\n" +
-                 "Адреса: м. Харків, [вулиця]\n\n" +
-                 "Ви також можете написати адміністратору безпосередньо через цього бота. Натисніть кнопку нижче:";
-                 
-    ctx.replyWithHTML(text, Markup.inlineKeyboard([
-        [Markup.button.callback('✉️ Написати адміністратору', 'start_chat')]
-    ]));
+    const text = "📞 <b>Наші контакти:</b>\n\nТелефон: +38 (099) XXX-XX-XX\nАдреса: м. Харків\n\nВи також можете написати адміністратору безпосередньо через цього бота. Натисніть кнопку нижче:";
+    ctx.replyWithHTML(text, Markup.inlineKeyboard([[Markup.button.callback('✉️ Написати адміністратору', 'start_chat')]]));
 });
 
-// Початок чату
 bot.action('start_chat', async (ctx) => {
     await ctx.answerCbQuery();
     await ctx.reply("✍️ Напишіть ваше повідомлення сюди, і ми передамо його адміністратору.\n\n(Для скасування операції натисніть /cancel)");
 });
 
-
-// ==========================================
-//          АДМІН-ПАНЕЛЬ
-// ==========================================
-
-bot.hears('➕ Додати турнір', (ctx) => {
-    if (!isAdmin(ctx)) return; // Захист від звичайних юзерів
-    ctx.reply("Щоб додати новий турнір, надішліть його назву, дату, час та формат.\n\n(Ця функція запрацює після підключення бази даних)");
-});
-
 bot.hears('💬 Чат з користувачами', (ctx) => {
     if (!isAdmin(ctx)) return;
-    ctx.reply("Тут ви зможете бачити вхідні повідомлення від користувачів, відповідати їм, завершувати діалог або блокувати спамерів.\n\n(Очікує підключення системи чатів)");
+    ctx.reply("Система чатів у процесі розробки.");
 });
 
-const addTournamentWizard = new Scenes.WizardScene(
-    'add-tournament',
-    (ctx) => {
-        ctx.reply('Введіть назву турніру:');
-        ctx.wizard.state.tournamentData = {};
-        return ctx.wizard.next();
-    },
-    (ctx) => {
-        ctx.wizard.state.tournamentData.title = ctx.message.text;
-        ctx.reply('Введіть дату та час (наприклад, 20 червня, 18:00):');
-        return ctx.wizard.next();
-    },
-    (ctx) => {
-        ctx.wizard.state.tournamentData.date = ctx.message.text;
-        ctx.reply('Введіть формат (наприклад, Вільна піраміда):');
-        return ctx.wizard.next();
-    },
-    async (ctx) => {
-        ctx.wizard.state.tournamentData.format = ctx.message.text;
-        ctx.wizard.state.tournamentData.active = true;
-        
-        const db = await getDatabase();
-        await db.collection('tournaments').insertOne(ctx.wizard.state.tournamentData);
-        
-        ctx.reply('✅ Турнір успішно додано!');
-        return ctx.scene.leave();
-    }
-);
+bot.hears('➕ Додати турнір', (ctx) => {
+    if (!isAdmin(ctx)) return;
+    ctx.reply("Щоб додати новий турнір, просто надішліть повідомлення у такому форматі:\n\n+Турнір | Назва | Дата | Формат\n\nНаприклад:\n+Турнір | Кубок Харкова | 15 червня, 18:00 | Вільна піраміда");
+});
 
-// --- ЕКСПОРТ ДЛЯ VERCEL ---
+bot.hears(/^\+Турнір\s*\|\s*(.+?)\s*\|\s*(.+?)\s*\|\s*(.+)$/i, async (ctx) => {
+    if (!isAdmin(ctx)) return;
+    
+    const title = ctx.match[1].trim();
+    const date = ctx.match[2].trim();
+    const format = ctx.match[3].trim();
+
+    try {
+        const db = await getDatabase();
+        await db.collection('tournaments').insertOne({
+            title,
+            date,
+            format,
+            active: true
+        });
+        ctx.reply(`✅ Турнір "${title}" успішно додано! Можете перевірити його в меню.`);
+    } catch (err) {
+        console.error(err);
+        ctx.reply("Помилка при додаванні турніру до бази даних.");
+    }
+});
+
 module.exports = async (req, res) => {
     try {
         await bot.handleUpdate(req.body);
         res.status(200).send('OK');
     } catch (error) {
-        console.error('Помилка:', error);
+        console.error(error);
         res.status(500).send('Internal Server Error');
     }
 };
