@@ -180,4 +180,88 @@ bot.hears('❌ Видалити турнір', async (ctx) => {
         const db = await getDatabase();
         const tournaments = await db.collection('tournaments').find({ active: true }).toArray();
 
-        if (tournaments.length ===
+        if (tournaments.length === 0) return ctx.reply('Наразі немає активних турнірів для видалення.');
+
+        const buttons = tournaments.map(t => [Markup.button.callback(`❌ ${t.title}`, `del_${t._id}`)]);
+        return ctx.reply('Оберіть турнір, який хочете видалити:', Markup.inlineKeyboard(buttons));
+    } catch (err) {
+        return ctx.reply('Помилка завантаження турнірів.');
+    }
+});
+
+bot.action(/del_(.+)/, async (ctx) => {
+    if (!isAdmin(ctx)) return ctx.answerCbQuery('У вас немає прав.', { show_alert: true });
+    const tournamentId = ctx.match[1];
+    try {
+        const db = await getDatabase();
+        await db.collection('tournaments').deleteOne({ _id: new ObjectId(tournamentId) });
+        await ctx.answerCbQuery('Турнір успішно видалено!');
+        await ctx.editMessageText('✅ Турнір успішно видалено з бази.');
+    } catch (err) {
+        await ctx.answerCbQuery('Помилка видалення.');
+    }
+});
+
+
+// --- ОБРОБКА ВСІХ ТЕКСТОВИХ ПОВІДОМЛЕНЬ (ДЛЯ ЧАТУ) ---
+bot.on('message', async (ctx) => {
+    if (!ctx.message.text) return; // Ігноруємо стікери, фото і т.д.
+    
+    const text = ctx.message.text;
+    const ignoreList = ['🎱 Записатися на турнір', '📞 Зв\'язок', '➕ Додати турнір', '❌ Видалити турнір', '/start'];
+    if (ignoreList.includes(text) || text.startsWith('+Турнір')) return;
+
+    try {
+        const db = await getDatabase();
+        const user = await db.collection('users').findOne({ telegramId: ctx.from.id });
+
+        // Якщо це АДМІН і він зараз відповідає комусь
+        if (isAdmin(ctx) && user?.replyingTo) {
+            const targetUserId = user.replyingTo;
+            try {
+                await ctx.telegram.sendMessage(targetUserId, `👨‍💼 <b>Відповідь від адміністратора:</b>\n\n${text}`, { parse_mode: 'HTML' });
+                await ctx.reply('✅ Вашу відповідь успішно надіслано!');
+            } catch (err) {
+                await ctx.reply('❌ Помилка: користувач заблокував бота або його не знайдено.');
+            }
+            // Знімаємо режим відповіді
+            await db.collection('users').updateOne({ telegramId: ctx.from.id }, { $unset: { replyingTo: "" } });
+            return;
+        }
+
+        // Якщо це ЗВИЧАЙНИЙ ЮЗЕР і він почав чат
+        if (!isAdmin(ctx) && user?.isChatting) {
+            for (const adminId of ADMIN_IDS) {
+                try {
+                    await ctx.telegram.sendMessage(
+                        adminId,
+                        `📩 <b>Нове повідомлення від користувача:</b>\n👤 ${ctx.from.first_name} (@${ctx.from.username || 'немає'})\n\n${text}`,
+                        {
+                            parse_mode: 'HTML',
+                            reply_markup: {
+                                inline_keyboard: [[ Markup.button.callback('Відповісти', `reply_${ctx.from.id}`) ]]
+                            }
+                        }
+                    );
+                } catch (e) { console.error("Не зміг надіслати адміну", e); }
+            }
+            await ctx.reply('✅ Ваше повідомлення передано адміністратору! Очікуйте на відповідь.');
+            // Вимикаємо режим чату (щоб наступні повідомлення не летіли адміну просто так)
+            await db.collection('users').updateOne({ telegramId: ctx.from.id }, { $set: { isChatting: false } });
+            return;
+        }
+    } catch (err) {
+        console.error(err);
+    }
+});
+
+
+module.exports = async (req, res) => {
+    try {
+        await bot.handleUpdate(req.body);
+        res.status(200).send('OK');
+    } catch (error) {
+        console.error(error);
+        res.status(500).send('Internal Server Error');
+    }
+};
