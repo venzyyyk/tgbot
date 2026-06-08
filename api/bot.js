@@ -89,14 +89,20 @@ bot.action(/reg_(.+)/, async (ctx) => {
             firstName: ctx.from.first_name,
             date: new Date()
         });
-        await ctx.answerCbQuery('Заявку прийнято!');
-        await ctx.reply('Дякуємо! Ваша заявка на турнір прийнята. Адміністратор зв\'яжеться з вами для підтвердження.');
+
+
+        await ctx.answerCbQuery();
+
+        const formLink = "https://forms.gle/ТВОЯ_ССЫЛКА_НА_ФОРМУ"; 
+        const text = `📝 Щоб завершити реєстрацію, будь ласка, заповніть цю форму:\n\n👉 ${formLink}\n\nПісля заповнення ми зв'яжемося з вами для підтвердження.`;
+        
+        await ctx.reply(text);
+        
     } catch (err) {
         console.error(err);
-        await ctx.answerCbQuery('Помилка реєстрації.');
+        await ctx.answerCbQuery('Помилка.');
     }
 });
-
 bot.hears('📞 Зв\'язок', (ctx) => {
     const text = "📞 <b>Наші контакти:</b>\n\nТелефон: +38 (099) XXX-XX-XX\nАдреса: м. Харків\n\nВи також можете написати адміністратору безпосередньо через цього бота. Натисніть кнопку нижче:";
     ctx.replyWithHTML(text, Markup.inlineKeyboard([[Markup.button.callback('✉️ Написати адміністратору', 'start_chat')]]));
