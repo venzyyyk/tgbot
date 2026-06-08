@@ -1,4 +1,4 @@
-const { MongoClient, ObjectId } = require('mongodb'); // Добавили ObjectId
+const { MongoClient, ObjectId } = require('mongodb');
 const { Telegraf, Markup } = require('telegraf');
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
@@ -28,7 +28,8 @@ const getUserKeyboard = () => {
 const getAdminKeyboard = () => {
     return Markup.keyboard([
         ['🎱 Записатися на турнір', '📞 Зв\'язок'],
-        ['➕ Додати турнір', '💬 Чат з користувачами']
+        ['➕ Додати турнір', '❌ Видалити турнір'],
+        ['💬 Чат з користувачами']
     ]).resize();
 };
 
@@ -78,13 +79,10 @@ bot.hears('🎱 Записатися на турнір', async (ctx) => {
     }
 });
 
-// --- ЗМІНЕНО: Видача форми ---
 bot.action(/reg_(.+)/, async (ctx) => {
     const tournamentId = ctx.match[1];
     try {
         const db = await getDatabase();
-        
-        // Знаходимо конкретний турнір в базі за його ID
         const tournament = await db.collection('tournaments').findOne({ _id: new ObjectId(tournamentId) });
 
         if (!tournament || !tournament.formLink) {
@@ -92,7 +90,6 @@ bot.action(/reg_(.+)/, async (ctx) => {
             return;
         }
 
-        // Записуємо статистику в БД (за бажанням)
         await db.collection('registrations').insertOne({
             tournamentId,
             userId: ctx.from.id,
@@ -103,9 +100,7 @@ bot.action(/reg_(.+)/, async (ctx) => {
 
         await ctx.answerCbQuery();
 
-        // Віддаємо лінк саме для цього турніру
         const text = `📝 Щоб завершити реєстрацію на <b>${tournament.title}</b>, будь ласка, заповніть цю форму:\n\n👉 ${tournament.formLink}\n\nПісля заповнення ми зв'яжемося з вами для підтвердження.`;
-        
         await ctx.replyWithHTML(text);
     } catch (err) {
         console.error(err);
@@ -128,20 +123,18 @@ bot.hears('💬 Чат з користувачами', (ctx) => {
     ctx.reply("Система чатів у процесі розробки.");
 });
 
-// --- ЗМІНЕНО: Інструкція для адміна ---
 bot.hears('➕ Додати турнір', (ctx) => {
     if (!isAdmin(ctx)) return;
     ctx.reply("Щоб додати новий турнір, надішліть повідомлення у такому форматі:\n\n+Турнір | Назва | Дата | Формат | Посилання на форму\n\nНаприклад:\n+Турнір | Кубок Харкова | 15 червня, 18:00 | Вільна піраміда | https://forms.gle/твоя_силка");
 });
 
-// --- ЗМІНЕНО: Регулярка тепер ловить 4 параметра ---
 bot.hears(/^\+Турнір\s*\|\s*(.+?)\s*\|\s*(.+?)\s*\|\s*(.+?)\s*\|\s*(.+)$/i, async (ctx) => {
     if (!isAdmin(ctx)) return;
     
     const title = ctx.match[1].trim();
     const date = ctx.match[2].trim();
     const format = ctx.match[3].trim();
-    const formLink = ctx.match[4].trim(); // Зберігаємо посилання
+    const formLink = ctx.match[4].trim();
 
     try {
         const db = await getDatabase();
@@ -149,13 +142,57 @@ bot.hears(/^\+Турнір\s*\|\s*(.+?)\s*\|\s*(.+?)\s*\|\s*(.+?)\s*\|\s*(.+)$/i
             title,
             date,
             format,
-            formLink, // Відправляємо лінк в БД
+            formLink,
             active: true
         });
         ctx.reply(`✅ Турнір "${title}" успішно додано!\n🔗 Прив'язана форма: ${formLink}`);
     } catch (err) {
         console.error(err);
         ctx.reply("Помилка при додаванні турніру до бази даних.");
+    }
+});
+
+// --- НОВЕ: Вивід списку для видалення ---
+bot.hears('❌ Видалити турнір', async (ctx) => {
+    if (!isAdmin(ctx)) return;
+    try {
+        const db = await getDatabase();
+        const tournaments = await db.collection('tournaments').find({ active: true }).toArray();
+
+        if (tournaments.length === 0) {
+            return ctx.reply('Наразі немає активних турнірів для видалення.');
+        }
+
+        // Створюємо масив кнопок для кожного турніру
+        const buttons = tournaments.map(t => [Markup.button.callback(`❌ ${t.title}`, `del_${t._id}`)]);
+        
+        return ctx.reply('Оберіть турнір, який хочете видалити:', Markup.inlineKeyboard(buttons));
+    } catch (err) {
+        console.error(err);
+        return ctx.reply('Помилка завантаження турнірів.');
+    }
+});
+
+// --- НОВЕ: Логіка самого видалення з БД ---
+bot.action(/del_(.+)/, async (ctx) => {
+    if (!isAdmin(ctx)) {
+        return ctx.answerCbQuery('У вас немає прав для цієї дії.', { show_alert: true });
+    }
+    
+    const tournamentId = ctx.match[1];
+    
+    try {
+        const db = await getDatabase();
+        // Видаляємо документ з колекції по ID
+        await db.collection('tournaments').deleteOne({ _id: new ObjectId(tournamentId) });
+        
+        await ctx.answerCbQuery('Турнір успішно видалено!');
+        
+        // Змінюємо повідомлення, щоб кнопки зникли
+        await ctx.editMessageText('✅ Турнір успішно видалено з бази.');
+    } catch (err) {
+        console.error(err);
+        await ctx.answerCbQuery('Помилка видалення.');
     }
 });
 
