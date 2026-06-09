@@ -42,7 +42,7 @@ bot.start(async (ctx) => {
         const db = await getDatabase();
         await db.collection('users').updateOne(
             { telegramId: ctx.from.id },
-            { $set: { username: ctx.from.username, firstName: ctx.from.first_name, lastSeen: new Date() }, $unset: { isChatting: "", replyingTo: "", isAnnouncing: "" } },
+            { $set: { username: ctx.from.username, firstName: ctx.from.first_name, lastSeen: new Date() }, $unset: { isChatting: "", isTraining: "", replyingTo: "", isAnnouncing: "" } },
             { upsert: true }
         );
     } catch (err) {
@@ -120,25 +120,41 @@ bot.hears('🌐 Приєднатися до VHC', (ctx) => {
     });
 });
 
-// --- 3. ЗВ'ЯЗОК ---
+// --- 3. ЗВ'ЯЗОК (ІНФО + ЧАТ) ---
 bot.hears('📞 Зв\'язатися', (ctx) => {
-    ctx.reply("📞 <b>Зв'язок з організатором:</b>\n\nВи можете написати або зателефонувати безпосередньо Костянтину для вирішення будь-яких питань:\n\n👉 @cutting9", { parse_mode: 'HTML' });
+    const text = "📞 <b>Зв'язок з організатором:</b>\n\n📱 Телефон: +380 68 990 64 34\n✈️ Telegram: @cutting9\n\nВи також можете написати повідомлення безпосередньо через цього бота. Натисніть кнопку нижче:";
+    ctx.replyWithHTML(text, Markup.inlineKeyboard([[Markup.button.callback('✉️ Написати в бот', 'start_chat')]]));
 });
 
-// --- 4. ЗАПИС НА НАВЧАННЯ (ЧАТ З АДМІНОМ) ---
-bot.hears('🎓 Записатися на навчання', async (ctx) => {
+bot.action('start_chat', async (ctx) => {
+    await ctx.answerCbQuery();
     try {
         const db = await getDatabase();
         await db.collection('users').updateOne(
             { telegramId: ctx.from.id },
             { $set: { isChatting: true } }
         );
-        ctx.reply("✍️ Напишіть ваше ім'я, номер телефону та побажання щодо навчання. Ваша заявка буде надіслана тренеру.\n\n(Для скасування натисніть Скасувати ❌)", Markup.keyboard([['Скасувати ❌']]).resize());
+        ctx.reply("✍️ Напишіть ваше повідомлення. Воно буде надіслано організатору.\n\n(Для скасування натисніть Скасувати ❌)", Markup.keyboard([['Скасувати ❌']]).resize());
     } catch (err) {
         console.error(err);
     }
 });
 
+// --- 4. ЗАПИС НА НАВЧАННЯ ---
+bot.hears('🎓 Записатися на навчання', async (ctx) => {
+    try {
+        const db = await getDatabase();
+        await db.collection('users').updateOne(
+            { telegramId: ctx.from.id },
+            { $set: { isTraining: true } }
+        );
+        ctx.reply("✍️ Напишіть ваше ім'я та номер телефону. Ваша заявка буде надіслана тренеру.\n\n(Для скасування натисніть Скасувати ❌)", Markup.keyboard([['Скасувати ❌']]).resize());
+    } catch (err) {
+        console.error(err);
+    }
+});
+
+// --- ВІДПОВІДЬ АДМІНА ---
 bot.action(/reply_(.+)/, async (ctx) => {
     if (!isAdmin(ctx)) return ctx.answerCbQuery('Тільки для адміністраторів', { show_alert: true });
     
@@ -238,7 +254,7 @@ const cancelAction = async (ctx) => {
         const db = await getDatabase();
         await db.collection('users').updateOne(
             { telegramId: ctx.from.id },
-            { $unset: { isChatting: "", replyingTo: "", isAnnouncing: "" } }
+            { $unset: { isChatting: "", isTraining: "", replyingTo: "", isAnnouncing: "" } }
         );
         const kb = isAdmin(ctx) ? getAdminKeyboard() : getUserKeyboard();
         await ctx.reply('Дію скасовано. Повернення до головного меню.', kb);
@@ -250,7 +266,7 @@ const cancelAction = async (ctx) => {
 bot.hears('Скасувати ❌', cancelAction);
 bot.command('cancel', cancelAction);
 
-// --- ОБРОБКА ВСІХ ПОВІДОМЛЕНЬ (ЧАТ + РОЗСИЛКА) ---
+// --- ОБРОБКА ВСІХ ПОВІДОМЛЕНЬ (ЧАТ + РОЗСИЛКА + НАВЧАННЯ) ---
 bot.on('message', async (ctx) => {
     const text = ctx.message.text || ctx.message.caption || '';
     const ignoreList = ['🏆 Записатися на турнір', '🎓 Записатися на навчання', '🌐 Приєднатися до VHC', '📞 Зв\'язатися', '➕ Додати турнір', '❌ Видалити турнір', '📢 Зробити розсилку', 'Скасувати ❌', '/start', '/cancel'];
@@ -282,11 +298,11 @@ bot.on('message', async (ctx) => {
             return;
         }
 
-        // 2. АДМІН відповідає в чаті (навчання)
+        // 2. АДМІН відповідає в чаті
         if (isAdmin(ctx) && user?.replyingTo) {
             const targetUserId = user.replyingTo;
             try {
-                await ctx.telegram.sendMessage(targetUserId, `👨‍💼 <b>Відповідь від тренера:</b>`, { parse_mode: 'HTML' });
+                await ctx.telegram.sendMessage(targetUserId, `👨‍💼 <b>Відповідь від організатора:</b>`, { parse_mode: 'HTML' });
                 await ctx.telegram.copyMessage(targetUserId, ctx.from.id, ctx.message.message_id);
                 await ctx.reply('✅ Вашу відповідь успішно надіслано!', getAdminKeyboard());
             } catch (err) {
@@ -296,13 +312,17 @@ bot.on('message', async (ctx) => {
             return;
         }
 
-        // 3. ЮЗЕР пише заявку на навчання
-        if (!isAdmin(ctx) && user?.isChatting) {
+        // 3. ЮЗЕР пише заявку на навчання АБО звичайне повідомлення
+        if (!isAdmin(ctx) && (user?.isChatting || user?.isTraining)) {
+            const isTraining = user.isTraining;
+            const adminTitle = isTraining ? '📩 <b>Нова заявка на навчання:</b>' : '📩 <b>Нове повідомлення від користувача:</b>';
+            const userReply = isTraining ? '✅ Ваша заявка передана тренеру! Очікуйте на відповідь.' : '✅ Ваше повідомлення передано організатору! Очікуйте на відповідь.';
+
             for (const adminId of ADMIN_IDS) {
                 try {
                     await ctx.telegram.sendMessage(
                         adminId,
-                        `📩 <b>Нова заявка на навчання:</b>\n👤 ${ctx.from.first_name} (@${ctx.from.username || 'немає'})`,
+                        `${adminTitle}\n👤 ${ctx.from.first_name} (@${ctx.from.username || 'немає'})`,
                         { parse_mode: 'HTML' }
                     );
                     await ctx.telegram.copyMessage(adminId, ctx.from.id, ctx.message.message_id, {
@@ -312,8 +332,9 @@ bot.on('message', async (ctx) => {
                     });
                 } catch (e) { console.error("Не зміг надіслати адміну", e); }
             }
-            await ctx.reply('✅ Ваша заявка передана тренеру! Очікуйте на відповідь.', getUserKeyboard());
-            await db.collection('users').updateOne({ telegramId: ctx.from.id }, { $set: { isChatting: false } });
+            
+            await ctx.reply(userReply, getUserKeyboard());
+            await db.collection('users').updateOne({ telegramId: ctx.from.id }, { $unset: { isChatting: "", isTraining: "" } });
             return;
         }
     } catch (err) {
