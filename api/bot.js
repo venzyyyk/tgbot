@@ -312,8 +312,8 @@ bot.on('message', async (ctx) => {
             return;
         }
 
-        // 3. ЮЗЕР пише заявку на навчання АБО звичайне повідомлення
-        if (!isAdmin(ctx) && (user?.isChatting || user?.isTraining)) {
+        // 3. ЮЗЕР (АБО АДМІН, ЩО ТЕСТУЄ) пише заявку на навчання АБО звичайне повідомлення
+        if (user?.isChatting || user?.isTraining) {
             const isTraining = user.isTraining;
             const adminTitle = isTraining ? '📩 <b>Нова заявка на навчання:</b>' : '📩 <b>Нове повідомлення від користувача:</b>';
             const userReply = isTraining ? '✅ Ваша заявка передана тренеру! Очікуйте на відповідь.' : '✅ Ваше повідомлення передано організатору! Очікуйте на відповідь.';
@@ -333,7 +333,7 @@ bot.on('message', async (ctx) => {
                 } catch (e) { console.error("Не зміг надіслати адміну", e); }
             }
             
-            await ctx.reply(userReply, getUserKeyboard());
+            await ctx.reply(userReply, isAdmin(ctx) ? getAdminKeyboard() : getUserKeyboard());
             await db.collection('users').updateOne({ telegramId: ctx.from.id }, { $unset: { isChatting: "", isTraining: "" } });
             return;
         }
