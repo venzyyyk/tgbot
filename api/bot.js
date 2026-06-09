@@ -28,7 +28,8 @@ const getUserKeyboard = () => {
 const getAdminKeyboard = () => {
     return Markup.keyboard([
         ['🎱 Записатися на турнір', '📞 Зв\'язок'],
-        ['➕ Додати турнір', '❌ Видалити турнір']
+        ['➕ Додати турнір', '❌ Видалити турнір'],
+        ['📢 Зробити розсилку']
     ]).resize();
 };
 
@@ -37,10 +38,9 @@ bot.start(async (ctx) => {
     
     try {
         const db = await getDatabase();
-        // Сбрасываем статусы чата при старте на всякий случай
         await db.collection('users').updateOne(
             { telegramId: ctx.from.id },
-            { $set: { username: ctx.from.username, firstName: ctx.from.first_name, lastSeen: new Date() }, $unset: { isChatting: "", replyingTo: "" } },
+            { $set: { username: ctx.from.username, firstName: ctx.from.first_name, lastSeen: new Date() }, $unset: { isChatting: "", replyingTo: "", isAnnouncing: "" } },
             { upsert: true }
         );
     } catch (err) {
@@ -108,13 +108,11 @@ bot.action(/reg_(.+)/, async (ctx) => {
 });
 
 bot.hears('📞 Зв\'язок', (ctx) => {
-    const text = "📞 <b>Наші контакти:</b>\n\nТелефон: +380689906434\nАдреса: проспект Героїв Харкова 76, м.Харків\n\nВи також можете написати адміністратору безпосередньо через цього бота. Натисніть кнопку нижче:";
+    const text = "📞 <b>Наші контакти:</b>\n\nТелефон: +38 (099) XXX-XX-XX\nАдреса: м. Харків\n\nВи також можете написати адміністратору безпосередньо через цього бота. Натисніть кнопку нижче:";
     ctx.replyWithHTML(text, Markup.inlineKeyboard([[Markup.button.callback('✉️ Написати адміністратору', 'start_chat')]]));
 });
 
-// --- ЛОГІКА ЧАТУ (ПОЧАТОК) ---
-
-// 1. Користувач натискає кнопку
+// --- ЧАТ (ПОЧАТОК) ---
 bot.action('start_chat', async (ctx) => {
     await ctx.answerCbQuery();
     try {
@@ -123,13 +121,12 @@ bot.action('start_chat', async (ctx) => {
             { telegramId: ctx.from.id },
             { $set: { isChatting: true } }
         );
-        await ctx.reply("✍️ Напишіть ваше повідомлення. Воно буде надіслано адміністратору.");
+        ctx.reply("✍️ Напишіть ваше повідомлення. Воно буде надіслано адміністратору.\n\n(Для скасування натисніть /cancel)", Markup.keyboard([['Скасувати ❌']]).resize());
     } catch (err) {
         console.error(err);
     }
 });
 
-// 2. Адмін натискає кнопку під повідомленням юзера
 bot.action(/reply_(.+)/, async (ctx) => {
     if (!isAdmin(ctx)) return ctx.answerCbQuery('Тільки для адміністраторів', { show_alert: true });
     
@@ -142,14 +139,15 @@ bot.action(/reply_(.+)/, async (ctx) => {
             { telegramId: ctx.from.id },
             { $set: { replyingTo: targetUserId } }
         );
-        await ctx.reply("✍️ Напишіть вашу відповідь. Наступне повідомлення буде надіслано цьому користувачу.");
+        ctx.reply("✍️ Напишіть вашу відповідь. Наступне повідомлення буде надіслано цьому користувачу.", Markup.keyboard([['Скасувати ❌']]).resize());
     } catch (err) {
         console.error(err);
     }
 });
-// --- ЛОГІКА ЧАТУ (КІНЕЦЬ) ---
+// --- ЧАТ (КІНЕЦЬ) ---
 
 
+// --- ТУРНІРИ ---
 bot.hears('➕ Додати турнір', (ctx) => {
     if (!isAdmin(ctx)) return;
     ctx.reply("Щоб додати новий турнір, надішліть повідомлення у такому форматі:\n\n+Турнір | Назва | Дата | Формат | Посилання на форму\n\nНаприклад:\n+Турнір | Кубок Харкова | 15 червня, 18:00 | Вільна піраміда | https://forms.gle/твоя_силка");
@@ -203,50 +201,114 @@ bot.action(/del_(.+)/, async (ctx) => {
 });
 
 
-// --- ОБРОБКА ВСІХ ТЕКСТОВИХ ПОВІДОМЛЕНЬ (ДЛЯ ЧАТУ) ---
+// --- РОЗСИЛКА (ОГОЛОШЕННЯ) ---
+bot.hears('📢 Зробити розсилку', async (ctx) => {
+    if (!isAdmin(ctx)) return;
+    try {
+        const db = await getDatabase();
+        await db.collection('users').updateOne(
+            { telegramId: ctx.from.id },
+            { $set: { isAnnouncing: true } }
+        );
+        ctx.reply("📣 <b>Режим розсилки активовано!</b>\n\nНадішліть сюди текст, фото або відео. Це повідомлення буде переслано <b>всім</b> користувачам бота.", {
+            parse_mode: 'HTML',
+            reply_markup: {
+                keyboard: [['Скасувати ❌']],
+                resize_keyboard: true
+            }
+        });
+    } catch (err) {
+        console.error(err);
+        ctx.reply('Помилка.');
+    }
+});
+
+
+// --- СКАСУВАННЯ ДІЙ ---
+const cancelAction = async (ctx) => {
+    try {
+        const db = await getDatabase();
+        await db.collection('users').updateOne(
+            { telegramId: ctx.from.id },
+            { $unset: { isChatting: "", replyingTo: "", isAnnouncing: "" } }
+        );
+        const kb = isAdmin(ctx) ? getAdminKeyboard() : getUserKeyboard();
+        await ctx.reply('Дію скасовано. Повернення до головного меню.', kb);
+    } catch (err) {
+        console.error(err);
+    }
+};
+
+bot.hears('Скасувати ❌', cancelAction);
+bot.command('cancel', cancelAction);
+
+
+// --- ОБРОБКА ВСІХ ПОВІДОМЛЕНЬ (ЧАТ + РОЗСИЛКА) ---
 bot.on('message', async (ctx) => {
-    if (!ctx.message.text) return; // Ігноруємо стікери, фото і т.д.
-    
-    const text = ctx.message.text;
-    const ignoreList = ['🎱 Записатися на турнір', '📞 Зв\'язок', '➕ Додати турнір', '❌ Видалити турнір', '/start'];
+    const text = ctx.message.text || ctx.message.caption || '';
+    const ignoreList = ['🎱 Записатися на турнір', '📞 Зв\'язок', '➕ Додати турнір', '❌ Видалити турнір', '📢 Зробити розсилку', 'Скасувати ❌', '/start', '/cancel'];
     if (ignoreList.includes(text) || text.startsWith('+Турнір')) return;
 
     try {
         const db = await getDatabase();
         const user = await db.collection('users').findOne({ telegramId: ctx.from.id });
 
-        // Якщо це АДМІН і він зараз відповідає комусь
+        // 1. Якщо це АДМІН робить РОЗСИЛКУ
+        if (isAdmin(ctx) && user?.isAnnouncing) {
+            const allUsers = await db.collection('users').find({}).toArray();
+            let successCount = 0;
+            
+            await ctx.reply('⏳ Починаю розсилку, зачекайте...');
+            
+            for (const u of allUsers) {
+                // Не відправляємо самому собі
+                if (u.telegramId === ctx.from.id) continue;
+                try {
+                    // copyMessage копіює все: текст, картинки, форматування
+                    await ctx.telegram.copyMessage(u.telegramId, ctx.from.id, ctx.message.message_id);
+                    successCount++;
+                } catch (e) {
+                    console.log(`Не зміг відправити ${u.telegramId}`);
+                }
+            }
+            
+            // Вимикаємо режим розсилки
+            await db.collection('users').updateOne({ telegramId: ctx.from.id }, { $unset: { isAnnouncing: "" } });
+            await ctx.reply(`✅ Розсилку успішно надіслано ${successCount} користувачам!`, getAdminKeyboard());
+            return;
+        }
+
+        // 2. Якщо це АДМІН відповідає в чаті
         if (isAdmin(ctx) && user?.replyingTo) {
             const targetUserId = user.replyingTo;
             try {
-                await ctx.telegram.sendMessage(targetUserId, `👨‍💼 <b>Відповідь від адміністратора:</b>\n\n${text}`, { parse_mode: 'HTML' });
-                await ctx.reply('✅ Вашу відповідь успішно надіслано!');
+                await ctx.telegram.sendMessage(targetUserId, `👨‍💼 <b>Відповідь від адміністратора:</b>`, { parse_mode: 'HTML' });
+                await ctx.telegram.copyMessage(targetUserId, ctx.from.id, ctx.message.message_id);
+                await ctx.reply('✅ Вашу відповідь успішно надіслано!', getAdminKeyboard());
             } catch (err) {
-                await ctx.reply('❌ Помилка: користувач заблокував бота або його не знайдено.');
+                await ctx.reply('❌ Помилка: користувач заблокував бота або його не знайдено.', getAdminKeyboard());
             }
-            // Знімаємо режим відповіді
             await db.collection('users').updateOne({ telegramId: ctx.from.id }, { $unset: { replyingTo: "" } });
             return;
         }
 
-        // Якщо це ЗВИЧАЙНИЙ ЮЗЕР і він почав чат
+        // 3. Якщо це ЗВИЧАЙНИЙ ЮЗЕР пише адмінам
         if (!isAdmin(ctx) && user?.isChatting) {
             for (const adminId of ADMIN_IDS) {
                 try {
                     await ctx.telegram.sendMessage(
                         adminId,
-                        `📩 <b>Нове повідомлення від користувача:</b>\n👤 ${ctx.from.first_name} (@${ctx.from.username || 'немає'})\n\n${text}`,
-                        {
-                            parse_mode: 'HTML',
-                            reply_markup: {
-                                inline_keyboard: [[ Markup.button.callback('Відповісти', `reply_${ctx.from.id}`) ]]
-                            }
-                        }
+                        `📩 <b>Нове повідомлення від користувача:</b>\n👤 ${ctx.from.first_name} (@${ctx.from.username || 'немає'})`,
+                        { parse_mode: 'HTML' }
                     );
+                    await ctx.telegram.copyMessage(adminId, ctx.from.id, ctx.message.message_id, {
+                        reply_markup: {
+                            inline_keyboard: [[ Markup.button.callback('Відповісти', `reply_${ctx.from.id}`) ]]
+                        }
+                    });
                 } catch (e) { console.error("Не зміг надіслати адміну", e); }
             }
-            await ctx.reply('✅ Ваше повідомлення передано адміністратору! Очікуйте на відповідь.');
-            // Вимикаємо режим чату (щоб наступні повідомлення не летіли адміну просто так)
+            await ctx.reply('✅ Ваше повідомлення передано адміністратору! Очікуйте на відповідь.', getUserKeyboard());
             await db.collection('users').updateOne({ telegramId: ctx.from.id }, { $set: { isChatting: false } });
             return;
         }
