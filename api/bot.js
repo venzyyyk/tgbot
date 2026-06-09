@@ -174,3 +174,159 @@ bot.hears(/^\+Турнір\s*\|\s*(.+?)\s*\|\s*(.+?)\s*\|\s*(.+?)\s*\|\s*(.+)$/i
     try {
         const db = await getDatabase();
         await db.collection('tournaments').insertOne({
+            title, date, format, formLink, active: true
+        });
+        ctx.reply(`✅ Турнір "${title}" успішно додано!\n🔗 Прив'язана форма: ${formLink}`);
+    } catch (err) {
+        ctx.reply("Помилка при додаванні турніру.");
+    }
+});
+
+bot.hears('❌ Видалити турнір', async (ctx) => {
+    if (!isAdmin(ctx)) return;
+    try {
+        const db = await getDatabase();
+        const tournaments = await db.collection('tournaments').find({ active: true }).toArray();
+
+        if (tournaments.length === 0) return ctx.reply('Наразі немає активних турнірів для видалення.');
+
+        const buttons = tournaments.map(t => [Markup.button.callback(`❌ ${t.title}`, `del_${t._id}`)]);
+        return ctx.reply('Оберіть турнір, який хочете видалити:', Markup.inlineKeyboard(buttons));
+    } catch (err) {
+        return ctx.reply('Помилка завантаження турнірів.');
+    }
+});
+
+bot.action(/del_(.+)/, async (ctx) => {
+    if (!isAdmin(ctx)) return ctx.answerCbQuery('У вас немає прав.', { show_alert: true });
+    const tournamentId = ctx.match[1];
+    try {
+        const db = await getDatabase();
+        await db.collection('tournaments').deleteOne({ _id: new ObjectId(tournamentId) });
+        await ctx.answerCbQuery('Турнір успішно видалено!');
+        await ctx.editMessageText('✅ Турнір успішно видалено з бази.');
+    } catch (err) {
+        await ctx.answerCbQuery('Помилка видалення.');
+    }
+});
+
+// --- РОЗСИЛКА (ОГОЛОШЕННЯ) ---
+bot.hears('📢 Зробити розсилку', async (ctx) => {
+    if (!isAdmin(ctx)) return;
+    try {
+        const db = await getDatabase();
+        await db.collection('users').updateOne(
+            { telegramId: ctx.from.id },
+            { $set: { isAnnouncing: true } }
+        );
+        ctx.reply("📣 <b>Режим розсилки активовано!</b>\n\nНадішліть сюди текст, фото або відео. Це повідомлення буде переслано <b>всім</b> користувачам бота.", {
+            parse_mode: 'HTML',
+            reply_markup: {
+                keyboard: [['Скасувати ❌']],
+                resize_keyboard: true
+            }
+        });
+    } catch (err) {
+        console.error(err);
+        ctx.reply('Помилка.');
+    }
+});
+
+// --- СКАСУВАННЯ ДІЙ ---
+const cancelAction = async (ctx) => {
+    try {
+        const db = await getDatabase();
+        await db.collection('users').updateOne(
+            { telegramId: ctx.from.id },
+            { $unset: { isChatting: "", replyingTo: "", isAnnouncing: "" } }
+        );
+        const kb = isAdmin(ctx) ? getAdminKeyboard() : getUserKeyboard();
+        await ctx.reply('Дію скасовано. Повернення до головного меню.', kb);
+    } catch (err) {
+        console.error(err);
+    }
+};
+
+bot.hears('Скасувати ❌', cancelAction);
+bot.command('cancel', cancelAction);
+
+// --- ОБРОБКА ВСІХ ПОВІДОМЛЕНЬ (ЧАТ + РОЗСИЛКА) ---
+bot.on('message', async (ctx) => {
+    const text = ctx.message.text || ctx.message.caption || '';
+    const ignoreList = ['🏆 Записатися на турнір', '🎓 Записатися на навчання', '🌐 Приєднатися до VHC', '📞 Зв\'язатися', '➕ Додати турнір', '❌ Видалити турнір', '📢 Зробити розсилку', 'Скасувати ❌', '/start', '/cancel'];
+    if (ignoreList.includes(text) || text.startsWith('+Турнір')) return;
+
+    try {
+        const db = await getDatabase();
+        const user = await db.collection('users').findOne({ telegramId: ctx.from.id });
+
+        // 1. АДМІН робить РОЗСИЛКУ
+        if (isAdmin(ctx) && user?.isAnnouncing) {
+            const allUsers = await db.collection('users').find({}).toArray();
+            let successCount = 0;
+            
+            await ctx.reply('⏳ Починаю розсилку, зачекайте...');
+            
+            for (const u of allUsers) {
+                if (u.telegramId === ctx.from.id) continue;
+                try {
+                    await ctx.telegram.copyMessage(u.telegramId, ctx.from.id, ctx.message.message_id);
+                    successCount++;
+                } catch (e) {
+                    console.log(`Не зміг відправити ${u.telegramId}`);
+                }
+            }
+            
+            await db.collection('users').updateOne({ telegramId: ctx.from.id }, { $unset: { isAnnouncing: "" } });
+            await ctx.reply(`✅ Розсилку успішно надіслано ${successCount} користувачам!`, getAdminKeyboard());
+            return;
+        }
+
+        // 2. АДМІН відповідає в чаті (навчання)
+        if (isAdmin(ctx) && user?.replyingTo) {
+            const targetUserId = user.replyingTo;
+            try {
+                await ctx.telegram.sendMessage(targetUserId, `👨‍💼 <b>Відповідь від тренера:</b>`, { parse_mode: 'HTML' });
+                await ctx.telegram.copyMessage(targetUserId, ctx.from.id, ctx.message.message_id);
+                await ctx.reply('✅ Вашу відповідь успішно надіслано!', getAdminKeyboard());
+            } catch (err) {
+                await ctx.reply('❌ Помилка: користувач заблокував бота або його не знайдено.', getAdminKeyboard());
+            }
+            await db.collection('users').updateOne({ telegramId: ctx.from.id }, { $unset: { replyingTo: "" } });
+            return;
+        }
+
+        // 3. ЮЗЕР пише заявку на навчання
+        if (!isAdmin(ctx) && user?.isChatting) {
+            for (const adminId of ADMIN_IDS) {
+                try {
+                    await ctx.telegram.sendMessage(
+                        adminId,
+                        `📩 <b>Нова заявка на навчання:</b>\n👤 ${ctx.from.first_name} (@${ctx.from.username || 'немає'})`,
+                        { parse_mode: 'HTML' }
+                    );
+                    await ctx.telegram.copyMessage(adminId, ctx.from.id, ctx.message.message_id, {
+                        reply_markup: {
+                            inline_keyboard: [[ Markup.button.callback('Відповісти', `reply_${ctx.from.id}`) ]]
+                        }
+                    });
+                } catch (e) { console.error("Не зміг надіслати адміну", e); }
+            }
+            await ctx.reply('✅ Ваша заявка передана тренеру! Очікуйте на відповідь.', getUserKeyboard());
+            await db.collection('users').updateOne({ telegramId: ctx.from.id }, { $set: { isChatting: false } });
+            return;
+        }
+    } catch (err) {
+        console.error(err);
+    }
+});
+
+module.exports = async (req, res) => {
+    try {
+        await bot.handleUpdate(req.body);
+        res.status(200).send('OK');
+    } catch (error) {
+        console.error(error);
+        res.status(500).send('Internal Server Error');
+    }
+};
