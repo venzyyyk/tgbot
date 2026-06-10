@@ -5,7 +5,7 @@ const BOT_TOKEN = process.env.BOT_TOKEN;
 const MONGODB_URI = process.env.MONGODB_URI;
 
 const bot = new Telegraf(BOT_TOKEN);
-
+// ID адмінів (твої і Костянтина)
 const ADMIN_IDS = [731859824, 6070383336, 8273747248]; 
 
 let cachedDb = null;
@@ -22,15 +22,17 @@ const isAdmin = (ctx) => ADMIN_IDS.includes(ctx.from.id);
 const getUserKeyboard = () => {
     return Markup.keyboard([
         ['🏆 Записатися на турнір', '🎓 Записатися на навчання'],
-        ['🌐 Приєднатися до VHC', '📞 Зв\'язатися']
+        ['🖼 Афіша', '🌐 Приєднатися до VHC'],
+        ['📞 Зв\'язок']
     ]).resize();
 };
 
 const getAdminKeyboard = () => {
     return Markup.keyboard([
         ['🏆 Записатися на турнір', '🎓 Записатися на навчання'],
-        ['🌐 Приєднатися до VHC', '📞 Зв\'язатися'],
+        ['🖼 Афіша', '🌐 Приєднатися до VHC', '📞 Зв\'язок'],
         ['➕ Додати турнір', '❌ Видалити турнір'],
+        ['➕ Додати афішу', '❌ Видалити афішу'],
         ['📢 Зробити розсилку']
     ]).resize();
 };
@@ -42,7 +44,10 @@ bot.start(async (ctx) => {
         const db = await getDatabase();
         await db.collection('users').updateOne(
             { telegramId: ctx.from.id },
-            { $set: { username: ctx.from.username, firstName: ctx.from.first_name, lastSeen: new Date() }, $unset: { isChatting: "", isTraining: "", replyingTo: "", isAnnouncing: "" } },
+            { 
+                $set: { username: ctx.from.username, firstName: ctx.from.first_name, lastSeen: new Date() }, 
+                $unset: { isChatting: "", isTraining: "", replyingTo: "", isAnnouncing: "", isAddingPoster: "" } 
+            },
             { upsert: true }
         );
     } catch (err) {
@@ -56,7 +61,134 @@ bot.start(async (ctx) => {
     return ctx.reply(`Вітаємо, ${userName}!\nВи в системі MATCHFLOW OS. Оберіть необхідну дію:`, getUserKeyboard());
 });
 
-// --- 1. ЗАПИС НА ТУРНІР ---
+
+// ==========================================
+// --- 1. АФІША (ГАЛЕРЕЯ) ---
+// ==========================================
+bot.hears('🖼 Афіша', async (ctx) => {
+    try {
+        const db = await getDatabase();
+        const posters = await db.collection('posters').find().sort({ _id: -1 }).toArray();
+
+        if (posters.length === 0) {
+            return ctx.reply('Наразі немає актуальних афіш.');
+        }
+
+        const p = posters[0];
+        const buttons = [];
+
+        if (posters.length > 1) {
+            buttons.push([
+                Markup.button.callback('⬅️', `poster_prev_0`),
+                Markup.button.callback(`1 / ${posters.length}`, `ignore`),
+                Markup.button.callback('➡️', `poster_next_0`)
+            ]);
+        }
+
+        await ctx.replyWithPhoto(p.fileId, { 
+            caption: p.caption || '', 
+            reply_markup: { inline_keyboard: buttons } 
+        });
+    } catch (err) {
+        console.error(err);
+        ctx.reply('Помилка завантаження афіш.');
+    }
+});
+
+// Обробка перемикання афіш
+bot.action(/poster_(prev|next)_(\d+)/, async (ctx) => {
+    try {
+        const dir = ctx.match[1];
+        let idx = parseInt(ctx.match[2]);
+        
+        const db = await getDatabase();
+        const posters = await db.collection('posters').find().sort({ _id: -1 }).toArray();
+
+        if (posters.length === 0) return ctx.answerCbQuery('Афіші відсутні.');
+
+        if (dir === 'next') idx++;
+        if (dir === 'prev') idx--;
+
+        if (idx < 0) idx = posters.length - 1;
+        if (idx >= posters.length) idx = 0;
+
+        const p = posters[idx];
+        const buttons = [[
+            Markup.button.callback('⬅️', `poster_prev_${idx}`),
+            Markup.button.callback(`${idx + 1} / ${posters.length}`, `ignore`),
+            Markup.button.callback('➡️', `poster_next_${idx}`)
+        ]];
+
+        await ctx.editMessageMedia(
+            { type: 'photo', media: p.fileId, caption: p.caption || '' },
+            { reply_markup: { inline_keyboard: buttons } }
+        ).catch(() => {}); // Ігноруємо помилку, якщо клікнули на ту саму кнопку двічі
+        
+        await ctx.answerCbQuery();
+    } catch (err) {
+        console.error(err);
+        await ctx.answerCbQuery('Сталася помилка.');
+    }
+});
+
+// Заглушка для центральної кнопки-лічильника
+bot.action('ignore', (ctx) => ctx.answerCbQuery());
+
+// Керування афішами (Адмін)
+bot.hears('➕ Додати афішу', async (ctx) => {
+    if (!isAdmin(ctx)) return;
+    try {
+        const db = await getDatabase();
+        await db.collection('users').updateOne(
+            { telegramId: ctx.from.id },
+            { $set: { isAddingPoster: true } }
+        );
+        ctx.reply("📸 <b>Надішліть фотографію для афіші.</b>\n\nВи можете додати підпис до фото, він також збережеться.\n\n(Для скасування натисніть Скасувати ❌)", {
+            parse_mode: 'HTML',
+            reply_markup: { keyboard: [['Скасувати ❌']], resize_keyboard: true }
+        });
+    } catch (err) {
+        console.error(err);
+    }
+});
+
+bot.hears('❌ Видалити афішу', async (ctx) => {
+    if (!isAdmin(ctx)) return;
+    try {
+        const db = await getDatabase();
+        const posters = await db.collection('posters').find().sort({ _id: -1 }).toArray();
+
+        if (posters.length === 0) return ctx.reply('Наразі немає афіш для видалення.');
+
+        const buttons = posters.map((p, i) => {
+            const shortCaption = p.caption ? ` (${p.caption.substring(0, 15)}...)` : '';
+            return [Markup.button.callback(`❌ Афіша ${i + 1}${shortCaption}`, `delpost_${p._id}`)];
+        });
+        
+        return ctx.reply('Оберіть афішу, яку хочете видалити:', Markup.inlineKeyboard(buttons));
+    } catch (err) {
+        return ctx.reply('Помилка завантаження афіш.');
+    }
+});
+
+bot.action(/delpost_(.+)/, async (ctx) => {
+    if (!isAdmin(ctx)) return ctx.answerCbQuery('У вас немає прав.', { show_alert: true });
+    try {
+        const db = await getDatabase();
+        await db.collection('posters').deleteOne({ _id: new ObjectId(ctx.match[1]) });
+        await ctx.answerCbQuery('Афішу успішно видалено!');
+        await ctx.editMessageText('✅ Афішу успішно видалено з бази.');
+    } catch (err) {
+        await ctx.answerCbQuery('Помилка видалення.');
+    }
+});
+
+
+// ==========================================
+// --- ІНШІ ФУНКЦІЇ БОТА ---
+// ==========================================
+
+// --- ЗАПИС НА ТУРНІР ---
 bot.hears('🏆 Записатися на турнір', async (ctx) => {
     try {
         const db = await getDatabase();
@@ -110,7 +242,7 @@ bot.action(/reg_(.+)/, async (ctx) => {
     }
 });
 
-// --- 2. ПРИЄДНАТИСЯ ДО VHC ---
+// --- ПРИЄДНАТИСЯ ДО VHC ---
 bot.hears('🌐 Приєднатися до VHC', (ctx) => {
     ctx.reply("🔗 <b>Система VHC (Venarion Handicap Control)</b>\n\nПриєднуйтесь до нашої системи, щоб відслідковувати свій прогрес, рейтинг та брати участь у турнірах MATCHFLOW OS.", {
         parse_mode: 'HTML',
@@ -120,8 +252,8 @@ bot.hears('🌐 Приєднатися до VHC', (ctx) => {
     });
 });
 
-// --- 3. ЗВ'ЯЗОК (ІНФО + ЧАТ) ---
-bot.hears('📞 Зв\'язатися', (ctx) => {
+// --- ЗВ'ЯЗОК (ІНФО + ЧАТ) ---
+bot.hears('📞 Зв\'язок', (ctx) => {
     const text = "📞 <b>Зв'язок з організатором:</b>\n\n📱 Телефон: +380 68 990 64 34\n✈️ Telegram: @cutting9\n\nВи також можете написати повідомлення безпосередньо через цього бота. Натисніть кнопку нижче:";
     ctx.replyWithHTML(text, Markup.inlineKeyboard([[Markup.button.callback('✉️ Написати в бот', 'start_chat')]]));
 });
@@ -140,7 +272,7 @@ bot.action('start_chat', async (ctx) => {
     }
 });
 
-// --- 4. ЗАПИС НА НАВЧАННЯ ---
+// --- ЗАПИС НА НАВЧАННЯ ---
 bot.hears('🎓 Записатися на навчання', async (ctx) => {
     try {
         const db = await getDatabase();
@@ -254,7 +386,7 @@ const cancelAction = async (ctx) => {
         const db = await getDatabase();
         await db.collection('users').updateOne(
             { telegramId: ctx.from.id },
-            { $unset: { isChatting: "", isTraining: "", replyingTo: "", isAnnouncing: "" } }
+            { $unset: { isChatting: "", isTraining: "", replyingTo: "", isAnnouncing: "", isAddingPoster: "" } }
         );
         const kb = isAdmin(ctx) ? getAdminKeyboard() : getUserKeyboard();
         await ctx.reply('Дію скасовано. Повернення до головного меню.', kb);
@@ -266,15 +398,30 @@ const cancelAction = async (ctx) => {
 bot.hears('Скасувати ❌', cancelAction);
 bot.command('cancel', cancelAction);
 
-// --- ОБРОБКА ВСІХ ПОВІДОМЛЕНЬ (ЧАТ + РОЗСИЛКА + НАВЧАННЯ) ---
+// --- ОБРОБКА ВСІХ ПОВІДОМЛЕНЬ (ЧАТ + РОЗСИЛКА + НАВЧАННЯ + АФІША) ---
 bot.on('message', async (ctx) => {
     const text = ctx.message.text || ctx.message.caption || '';
-    const ignoreList = ['🏆 Записатися на турнір', '🎓 Записатися на навчання', '🌐 Приєднатися до VHC', '📞 Зв\'язатися', '➕ Додати турнір', '❌ Видалити турнір', '📢 Зробити розсилку', 'Скасувати ❌', '/start', '/cancel'];
+    const ignoreList = ['🏆 Записатися на турнір', '🎓 Записатися на навчання', '🖼 Афіша', '🌐 Приєднатися до VHC', '📞 Зв\'язок', '➕ Додати турнір', '❌ Видалити турнір', '➕ Додати афішу', '❌ Видалити афішу', '📢 Зробити розсилку', 'Скасувати ❌', '/start', '/cancel'];
     if (ignoreList.includes(text) || text.startsWith('+Турнір')) return;
 
     try {
         const db = await getDatabase();
         const user = await db.collection('users').findOne({ telegramId: ctx.from.id });
+
+        // 0. АДМІН ДОДАЄ АФІШУ
+        if (isAdmin(ctx) && user?.isAddingPoster) {
+            if (!ctx.message.photo) {
+                return ctx.reply('Будь ласка, надішліть саме фотографію для афіші.');
+            }
+            // Беремо фото найкращої якості (останнє в масиві)
+            const fileId = ctx.message.photo[ctx.message.photo.length - 1].file_id;
+            const caption = ctx.message.caption || '';
+            
+            await db.collection('posters').insertOne({ fileId, caption, date: new Date() });
+            await db.collection('users').updateOne({ telegramId: ctx.from.id }, { $unset: { isAddingPoster: "" } });
+            
+            return ctx.reply('✅ Афішу успішно додано до галереї!', getAdminKeyboard());
+        }
 
         // 1. АДМІН робить РОЗСИЛКУ
         if (isAdmin(ctx) && user?.isAnnouncing) {
