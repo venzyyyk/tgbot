@@ -5,8 +5,8 @@ const BOT_TOKEN = process.env.BOT_TOKEN;
 const MONGODB_URI = process.env.MONGODB_URI;
 
 const bot = new Telegraf(BOT_TOKEN);
-// ID адмінів (твої і Костянтина)
-const ADMIN_IDS = [731859824, 6070383336]; 
+
+const ADMIN_IDS = [731859824, 6070383336, 8273747248]; 
 
 let cachedDb = null;
 
