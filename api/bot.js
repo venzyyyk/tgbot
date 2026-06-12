@@ -6,7 +6,7 @@ const MONGODB_URI = process.env.MONGODB_URI;
 const PAYMENT_TOKEN = process.env.PAYMENT_TOKEN; // Твій токен від BotFather (LiqPay/Portmone тощо)
 
 const bot = new Telegraf(BOT_TOKEN);
-const ADMIN_IDS = [731859824, 6070383336, 8273747248]; 
+const ADMIN_IDS = [731859824, 6070383336]; 
 
 let cachedDb = null;
 
@@ -22,7 +22,7 @@ const isAdmin = (ctx) => ADMIN_IDS.includes(ctx.from.id);
 const getUserKeyboard = () => {
     return Markup.keyboard([
         ['🏆 Записатися на турнір', '🎓 Записатися на навчання'],
-        ['🖼 Афіша', ''],
+        ['🖼 Афіша', '🎁 Сертифікати'],
         ['🌐 Приєднатися до VHC', '📞 Зв\'язок']
     ]).resize();
 };
@@ -30,7 +30,7 @@ const getUserKeyboard = () => {
 const getAdminKeyboard = () => {
     return Markup.keyboard([
         ['🏆 Записатися на турнір', '🎓 Записатися на навчання'],
-        ['🖼 Афіша', ''],
+        ['🖼 Афіша', '🎁 Сертифікати'],
         ['🌐 Приєднатися до VHC', '📞 Зв\'язок'],
         ['➕ Додати турнір', '❌ Видалити турнір'],
         ['➕ Додати афішу', '❌ Видалити афішу'],
@@ -92,7 +92,7 @@ bot.action(/buy_cert_(\d+)/, async (ctx) => {
         payload: `cert_${amount}_${ctx.from.id}_${Date.now()}`,
         provider_token: PAYMENT_TOKEN,
         currency: 'UAH',
-        prices: [{ label: `Подарунковий сертифікат`, amount: amount * 100 }] // Телеграм приймає ціну в копійках, тому * 100
+        prices: [{ label: `Подарунковий сертифікат`, amount: amount * 100 }]
     };
 
     try {
@@ -104,19 +104,15 @@ bot.action(/buy_cert_(\d+)/, async (ctx) => {
     }
 });
 
-// Обробник перевірки перед оплатою (обов'язковий для Телеграму)
 bot.on('pre_checkout_query', (ctx) => ctx.answerPreCheckoutQuery(true));
 
-// Обробник успішної оплати
 bot.on('successful_payment', async (ctx) => {
     const paymentInfo = ctx.message.successful_payment;
     const amount = paymentInfo.total_amount / 100;
     const currency = paymentInfo.currency;
 
-    // Повідомляємо клієнта
     await ctx.reply(`✅ <b>Оплата пройшла успішно!</b>\n\nВи придбали подарунковий сертифікат на суму <b>${amount} ${currency}</b>.\n\nНайближчим часом організатор зв'яжеться з вами для передачі сертифіката. Дякуємо!`, { parse_mode: 'HTML' });
 
-    // Відправляємо сповіщення адмінам
     for (const adminId of ADMIN_IDS) {
         try {
             await ctx.telegram.sendMessage(
@@ -132,7 +128,6 @@ bot.on('successful_payment', async (ctx) => {
         } catch (e) { console.error("Не зміг надіслати адміну", e); }
     }
 });
-
 
 // ==========================================
 // --- 1. АФІША (АЛЬБОМИ З НАЗВОЮ ТА ГОРТАННЯМ) ---
@@ -433,6 +428,21 @@ bot.hears('❌ Видалити турнір', async (ctx) => {
         return ctx.reply('Помилка завантаження турнірів.');
     }
 });
+
+// === ОСЬ ВІДНОВЛЕНИЙ ШМАТОК КОДУ ===
+bot.action(/del_(.+)/, async (ctx) => {
+    if (!isAdmin(ctx)) return ctx.answerCbQuery('У вас немає прав.', { show_alert: true });
+    const tournamentId = ctx.match[1];
+    try {
+        const db = await getDatabase();
+        await db.collection('tournaments').deleteOne({ _id: new ObjectId(tournamentId) });
+        await ctx.answerCbQuery('Турнір успішно видалено!');
+        await ctx.editMessageText('✅ Турнір успішно видалено з бази.');
+    } catch (err) {
+        await ctx.answerCbQuery('Помилка видалення.');
+    }
+});
+// ===================================
 
 bot.hears('📢 Зробити розсилку', async (ctx) => {
     if (!isAdmin(ctx)) return;
