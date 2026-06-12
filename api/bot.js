@@ -3,6 +3,7 @@ const { Telegraf, Markup } = require('telegraf');
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const MONGODB_URI = process.env.MONGODB_URI;
+const PAYMENT_TOKEN = process.env.PAYMENT_TOKEN; // Твій токен від BotFather (LiqPay/Portmone тощо)
 
 const bot = new Telegraf(BOT_TOKEN);
 const ADMIN_IDS = [731859824, 6070383336, 8273747248]; 
@@ -21,15 +22,16 @@ const isAdmin = (ctx) => ADMIN_IDS.includes(ctx.from.id);
 const getUserKeyboard = () => {
     return Markup.keyboard([
         ['🏆 Записатися на турнір', '🎓 Записатися на навчання'],
-        ['🖼 Афіша', '🌐 Приєднатися до VHC'],
-        ['📞 Зв\'язок']
+        ['🖼 Афіша', '🎁 Сертифікати'],
+        ['🌐 Приєднатися до VHC', '📞 Зв\'язок']
     ]).resize();
 };
 
 const getAdminKeyboard = () => {
     return Markup.keyboard([
         ['🏆 Записатися на турнір', '🎓 Записатися на навчання'],
-        ['🖼 Афіша', '🌐 Приєднатися до VHC', '📞 Зв\'язок'],
+        ['🖼 Афіша', '🎁 Сертифікати'],
+        ['🌐 Приєднатися до VHC', '📞 Зв\'язок'],
         ['➕ Додати турнір', '❌ Видалити турнір'],
         ['➕ Додати афішу', '❌ Видалити афішу'],
         ['📢 Зробити розсилку']
@@ -60,12 +62,82 @@ bot.start(async (ctx) => {
     return ctx.reply(`Вітаємо, ${userName}!\nВи в системі MATCHFLOW OS. Оберіть необхідну дію:`, getUserKeyboard());
 });
 
+// ==========================================
+// --- 0. ПОДАРУНКОВІ СЕРТИФІКАТИ (ОПЛАТА) ---
+// ==========================================
+
+bot.hears('🎁 Сертифікати', (ctx) => {
+    ctx.reply('🎁 <b>Подарункові сертифікати MATCHFLOW OS</b>\n\nЧудовий подарунок для любителів більярду! Сертифікат можна використати на тренування, оренду столу або участь у турнірі.\n\nОберіть номінал:', {
+        parse_mode: 'HTML',
+        reply_markup: {
+            inline_keyboard: [
+                [Markup.button.callback('Сертифікат на 500 грн', 'buy_cert_500')],
+                [Markup.button.callback('Сертифікат на 1000 грн', 'buy_cert_1000')],
+                [Markup.button.callback('Сертифікат на 2000 грн', 'buy_cert_2000')]
+            ]
+        }
+    });
+});
+
+bot.action(/buy_cert_(\d+)/, async (ctx) => {
+    const amount = parseInt(ctx.match[1]);
+    
+    if (!PAYMENT_TOKEN) {
+        return ctx.answerCbQuery('Оплата наразі недоступна. Зверніться до адміністратора.', { show_alert: true });
+    }
+
+    const invoice = {
+        title: `Сертифікат MATCHFLOW на ${amount} грн`,
+        description: `Електронний подарунковий сертифікат номіналом ${amount} грн. Після оплати з вами зв'яжеться адміністратор для його оформлення.`,
+        payload: `cert_${amount}_${ctx.from.id}_${Date.now()}`,
+        provider_token: PAYMENT_TOKEN,
+        currency: 'UAH',
+        prices: [{ label: `Подарунковий сертифікат`, amount: amount * 100 }] // Телеграм приймає ціну в копійках, тому * 100
+    };
+
+    try {
+        await ctx.replyWithInvoice(invoice);
+        await ctx.answerCbQuery();
+    } catch (err) {
+        console.error(err);
+        await ctx.answerCbQuery('Помилка при створенні рахунку.');
+    }
+});
+
+// Обробник перевірки перед оплатою (обов'язковий для Телеграму)
+bot.on('pre_checkout_query', (ctx) => ctx.answerPreCheckoutQuery(true));
+
+// Обробник успішної оплати
+bot.on('successful_payment', async (ctx) => {
+    const paymentInfo = ctx.message.successful_payment;
+    const amount = paymentInfo.total_amount / 100;
+    const currency = paymentInfo.currency;
+
+    // Повідомляємо клієнта
+    await ctx.reply(`✅ <b>Оплата пройшла успішно!</b>\n\nВи придбали подарунковий сертифікат на суму <b>${amount} ${currency}</b>.\n\nНайближчим часом організатор зв'яжеться з вами для передачі сертифіката. Дякуємо!`, { parse_mode: 'HTML' });
+
+    // Відправляємо сповіщення адмінам
+    for (const adminId of ADMIN_IDS) {
+        try {
+            await ctx.telegram.sendMessage(
+                adminId,
+                `💰 <b>НОВА ОПЛАТА СЕРТИФІКАТА!</b> 💰\n\n👤 Користувач: ${ctx.from.first_name} (@${ctx.from.username || 'немає'})\n💳 Номінал: <b>${amount} ${currency}</b>\n🧾 ID транзакції: <code>${paymentInfo.provider_payment_charge_id}</code>\n\nЗв'яжіться з клієнтом для видачі сертифіката!`,
+                { 
+                    parse_mode: 'HTML',
+                    reply_markup: {
+                        inline_keyboard: [[ Markup.button.callback('Написати клієнту', `reply_${ctx.from.id}`) ]]
+                    }
+                }
+            );
+        } catch (e) { console.error("Не зміг надіслати адміну", e); }
+    }
+});
+
 
 // ==========================================
 // --- 1. АФІША (АЛЬБОМИ З НАЗВОЮ ТА ГОРТАННЯМ) ---
 // ==========================================
 
-// Виведення списку афіш
 bot.hears('🖼 Афіша', async (ctx) => {
     try {
         const db = await getDatabase();
@@ -84,7 +156,6 @@ bot.hears('🖼 Афіша', async (ctx) => {
     }
 });
 
-// Кнопка "Назад до списку"
 bot.action('list_posters', async (ctx) => {
     try {
         await ctx.deleteMessage().catch(() => {});
@@ -98,12 +169,9 @@ bot.action('list_posters', async (ctx) => {
             reply_markup: { inline_keyboard: buttons }
         });
         await ctx.answerCbQuery();
-    } catch (e) {
-        console.error(e);
-    }
+    } catch (e) { console.error(e); }
 });
 
-// Відкриття конкретної афіші (перше фото)
 bot.action(/openposter_(.+)/, async (ctx) => {
     const posterId = ctx.match[1];
     try {
@@ -135,7 +203,6 @@ bot.action(/openposter_(.+)/, async (ctx) => {
     }
 });
 
-// Гортання фотографій всередині афіші
 bot.action(/editposter_(.+)_(.+)/, async (ctx) => {
     const posterId = ctx.match[1];
     let idx = parseInt(ctx.match[2]);
@@ -171,7 +238,6 @@ bot.action(/editposter_(.+)_(.+)/, async (ctx) => {
 
 bot.action('ignore', (ctx) => ctx.answerCbQuery());
 
-// КЕРУВАННЯ АФІШАМИ (АДМІН)
 bot.hears('➕ Додати афішу', async (ctx) => {
     if (!isAdmin(ctx)) return;
     try {
@@ -212,7 +278,6 @@ bot.action(/delpost_(.+)/, async (ctx) => {
         await ctx.answerCbQuery('Помилка видалення.');
     }
 });
-
 
 // ==========================================
 // --- ІНШІ ФУНКЦІЇ БОТА ---
@@ -390,7 +455,6 @@ bot.hears('📢 Зробити розсилку', async (ctx) => {
     }
 });
 
-// --- СКАСУВАННЯ ДІЙ ---
 const cancelAction = async (ctx) => {
     try {
         const db = await getDatabase();
@@ -408,17 +472,15 @@ const cancelAction = async (ctx) => {
 bot.hears('Скасувати ❌', cancelAction);
 bot.command('cancel', cancelAction);
 
-// --- ОБРОБКА ВСІХ ПОВІДОМЛЕНЬ ---
 bot.on('message', async (ctx) => {
     const text = ctx.message.text || ctx.message.caption || '';
-    const ignoreList = ['🏆 Записатися на турнір', '🎓 Записатися на навчання', '🖼 Афіша', '🌐 Приєднатися до VHC', '📞 Зв\'язок', '➕ Додати турнір', '❌ Видалити турнір', '➕ Додати афішу', '❌ Видалити афішу', '📢 Зробити розсилку', 'Скасувати ❌', '/start', '/cancel'];
-    if (ignoreList.includes(text) || text.startsWith('+Турнір')) return;
+    const ignoreList = ['🏆 Записатися на турнір', '🎓 Записатися на навчання', '🖼 Афіша', '🎁 Сертифікати', '🌐 Приєднатися до VHC', '📞 Зв\'язок', '➕ Додати турнір', '❌ Видалити турнір', '➕ Додати афішу', '❌ Видалити афішу', '📢 Зробити розсилку', 'Скасувати ❌', '/start', '/cancel'];
+    if (ignoreList.includes(text) || text.startsWith('+Турнір') || ctx.message.successful_payment) return;
 
     try {
         const db = await getDatabase();
         const user = await db.collection('users').findOne({ telegramId: ctx.from.id });
 
-        // 0.1 АДМІН вводить НАЗВУ афіші
         if (isAdmin(ctx) && user?.isAddingPosterTitle) {
             if (!ctx.message.text) return ctx.reply('Будь ласка, надішліть текстом назву афіші.');
             await db.collection('users').updateOne(
@@ -434,7 +496,6 @@ bot.on('message', async (ctx) => {
             });
         }
 
-        // 0.2 АДМІН надсилає ФОТОГРАФІЇ або зберігає
         if (isAdmin(ctx) && user?.isAddingPosterPhotos) {
             if (ctx.message.photo) {
                 const fileId = ctx.message.photo[ctx.message.photo.length - 1].file_id;
@@ -463,7 +524,6 @@ bot.on('message', async (ctx) => {
             return;
         }
 
-        // 1. АДМІН робить РОЗСИЛКУ
         if (isAdmin(ctx) && user?.isAnnouncing) {
             const allUsers = await db.collection('users').find({}).toArray();
             let successCount = 0;
@@ -485,7 +545,6 @@ bot.on('message', async (ctx) => {
             return;
         }
 
-        // 2. АДМІН відповідає в чаті
         if (isAdmin(ctx) && user?.replyingTo) {
             const targetUserId = user.replyingTo;
             try {
@@ -499,7 +558,6 @@ bot.on('message', async (ctx) => {
             return;
         }
 
-        // 3. ЮЗЕР пише заявку/повідомлення
         if (user?.isChatting || user?.isTraining) {
             const isTraining = user.isTraining;
             const adminTitle = isTraining ? '📩 <b>Нова заявка на навчання:</b>' : '📩 <b>Нове повідомлення від користувача:</b>';
