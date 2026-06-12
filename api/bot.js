@@ -6,7 +6,7 @@ const MONGODB_URI = process.env.MONGODB_URI;
 const PAYMENT_TOKEN = process.env.PAYMENT_TOKEN; // Твій токен від BotFather (LiqPay/Portmone тощо)
 
 const bot = new Telegraf(BOT_TOKEN);
-const ADMIN_IDS = [731859824, 6070383336]; 
+const ADMIN_IDS = [731859824, 6070383336, 8273747248]; 
 
 let cachedDb = null;
 
